@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Instrument Tuner</title>
+<style>
+  :root { --ok:#1ad16a; --bad:#ff5a5f; --card:rgba(255,255,255,.14); --stroke:rgba(255,255,255,.35); }
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100svh;display:grid;place-items:center;color:#fff;
+       font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Arial;transition:background .5s ease}
+  body.guitar{
+    background:
+      radial-gradient(1200px 600px at 10% -10%, rgba(255,165,0,.35), transparent 60%),
+      radial-gradient(1000px 800px at 120% 120%, rgba(255,69,0,.35), transparent 60%),
+      linear-gradient(120deg, #2b2d42, #1a1b25 60%);
+  }
+  body.violin, body.mandolin{
+    background:
+      radial-gradient(1200px 600px at -10% 10%, rgba(255,215,0,.35), transparent 60%),
+      radial-gradient(1000px 800px at 120% 120%, rgba(220,20,60,.35), transparent 60%),
+      linear-gradient(135deg, #3c153b, #18121f 60%);
+  }
+  .card{width:min(820px,92vw);backdrop-filter:blur(10px) saturate(130%);
+        background:var(--card);border:1px solid var(--stroke);border-radius:18px;
+        padding:18px 20px;box-shadow:0 20px 40px rgba(0,0,0,.25)}
+  h1{margin:0 0 10px;font-size:clamp(22px,3.2vw,28px)}
+  .row{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}
+  .controls{display:flex;flex-wrap:wrap;gap:10px}
+  select,button{appearance:none;border:1px solid var(--stroke);border-radius:12px;
+    padding:.6rem .8rem;background:rgba(255,255,255,.14);color:#fff;font-weight:600;cursor:pointer}
+  button:hover{background:rgba(255,255,255,.22)}
+  .strings{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+  .chip{padding:.45rem .7rem;border-radius:999px;border:1px solid var(--stroke);
+        background:rgba(255,255,255,.12);cursor:pointer;user-select:none}
+  .chip.active{outline:2px solid #fff}
+  .readouts{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:12px}
+  @media (max-width:560px){.readouts{grid-template-columns:1fr}}
+  .metric{background:rgba(255,255,255,.12);border:1px solid var(--stroke);border-radius:12px;padding:10px}
+  .label{opacity:.8;font-size:.9rem}
+  .value{font-size:1.1rem;font-weight:700}
+  .value.ok{color:var(--ok)} .value.bad{color:var(--bad)}
+  .meter{height:12px;background:rgba(255,255,255,.16);border-radius:6px;position:relative;overflow:hidden;margin-top:10px}
+  .ticks{position:absolute;inset:0;background:
+    linear-gradient(90deg, transparent 0 49%, rgba(255,255,255,.7) 49% 51%, transparent 51% 100%)}
+  .needle{position:absolute;top:0;bottom:0;width:3px;background:#fff;left:50%;transition:left 80ms linear}
+  .hint{opacity:.85;margin-top:10px}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+</style>
+
+<body class="guitar">
+  <div class="card">
+    <h1>Real-time Instrument Tuner</h1>
+
+    <div class="row">
+      <div class="controls">
+        <label>
+          <span class="label">Instrument</span><br>
+          <select id="instrument">
+            <option value="guitar" selected>Guitar</option>
+            <option value="violin">Violin</option>
+            <option value="mandolin">Mandolin</option>
+          </select>
+        </label>
+        <button id="start">Start Tuner</button>
+      </div>
+      <div id="status" class="hint">Disconnected.</div>
+    </div>
+
+    <div class="strings" id="strings"></div>
+
+    <div class="readouts">
+      <div class="metric">
+        <div class="label">Selected String</div>
+        <div class="value mono" id="selString">E2</div>
+      </div>
+      <div class="metric">
+        <div class="label">Target (Hz)</div>
+        <div class="value mono" id="targetHz">82.41</div>
+      </div>
+      <div class="metric">
+        <div class="label">Live Frequency</div>
+        <div class="value mono" id="freq">–</div>
+      </div>
+      <div class="metric">
+        <div class="label">Deviation</div>
+        <div class="value mono" id="dev">–</div>
+      </div>
+    </div>
+
+    <div class="meter"><div class="ticks"></div><div id="needle" class="needle"></div></div>
+    <div class="hint">Tip: Aim to get the <b>Deviation</b> within ±5 cents — it turns <span style="color:var(--ok);font-weight:700">green</span> when you’re in tune.</div>
+  </div>
+
+<script>
+(() => {
+  // ---- Tunings ----
+  const TUNINGS = {
+    guitar: { E2:82.41, A2:110.00, D3:146.83, G3:196.00, B3:246.94, E4:329.63 },
+    violin: { G3:196.00, D4:293.66, A4:440.00, E5:659.25 },
+    mandolin: { G3:196.00, D4:293.66, A4:440.00, E5:659.25 }
+  };
+  const ORDER = {
+    guitar: ['E2','A2','D3','G3','B3','E4'],
+    violin: ['G3','D4','A4','E5'],
+    mandolin: ['G3','D4','A4','E5']
+  };
+
+  // ---- UI refs ----
+  const body = document.body;
+  const instrumentSel = document.getElementById('instrument');
+  const stringsEl = document.getElementById('strings');
+  const startBtn = document.getElementById('start');
+  const statusEl = document.getElementById('status');
+  const selStringEl = document.getElementById('selString');
+  const targetHzEl = document.getElementById('targetHz');
+  const freqEl = document.getElementById('freq');
+  const devEl = document.getElementById('dev');
+  const needle = document.getElementById('needle');
+
+  const IN_TUNE = 5;        // cents threshold for green
+  const SMOOTH_N = 8;       // readings to median-smooth
+  const MIN_RMS = 0.01;     // gate quiet input
+
+  let currentInstrument = 'guitar';
+  let currentString = 'E2';
+  let ctx, analyser, buf, raf;
+  const history = [];
+
+  function setInstrument(name) {
+    currentInstrument = name;
+    body.className = name;
+    // rebuild string chips
+    stringsEl.innerHTML = '';
+    ORDER[name].forEach(n => {
+      const chip = document.createElement('div');
+      chip.className = 'chip';
+      chip.textContent = n;
+      chip.onclick = () => selectString(n);
+      stringsEl.appendChild(chip);
+    });
+    selectString(ORDER[name][0], true);
+  }
+
+  function selectString(s, silent) {
+    currentString = s;
+    [...stringsEl.children].forEach(c => c.classList.toggle('active', c.textContent===s));
+    selStringEl.textContent = s;
+    targetHzEl.textContent = TUNINGS[currentInstrument][s].toFixed(2);
+    if (!silent) statusEl.textContent = `Selected ${s} on ${label(currentInstrument)}.`;
+  }
+
+  function label(instr){ return instr[0].toUpperCase()+instr.slice(1); }
+
+  // ---- Pitch helpers ----
+  const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  function freqToNote(f) {
+    const A4 = 440;
+    const n = 69 + 12 * Math.log2(f / A4);
+    const r = Math.round(n);
+    return { name: NOTE_NAMES[r%12] + (Math.floor(r/12)-1), cents: Math.round(100*(n-r)) };
+  }
+  function median(a){ const s=a.slice().sort((x,y)=>x-y); const m=Math.floor(s.length/2); return s.length%2?s[m]:(s[m-1]+s[m])/2; }
+
+  // Autocorrelation (simple, robust for monophonic)
+  function autoCorrelate(buf, sr) {
+    const size = buf.length;
+    let rms = 0; for (let i=0;i<size;i++){ const v=buf[i]; rms += v*v; }
+    rms = Math.sqrt(rms/size);
+    if (rms < MIN_RMS) return -1;
+
+    const c = new Float32Array(size);
+    for (let i=0;i<size;i++){
+      let sum=0; for (let j=0;j<size-i;j++) sum += buf[j]*buf[j+i];
+      c[i]=sum;
+    }
+    let d=0; while (c[d] > c[d+1]) d++;
+    let max=-1, pos=-1;
+    for (let i=d;i<size;i++){ if (c[i] > max){ max=c[i]; pos=i; } }
+    let T0 = pos;
+    if (T0>0 && T0<size-1){
+      const x1=c[T0-1], x2=c[T0], x3=c[T0+1];
+      const a=(x1+x3-2*x2)/2, b=(x3-x1)/2;
+      if (a) T0 = T0 - b/(2*a);
+    }
+    return sr / T0;
+  }
+
+  function loop() {
+    analyser.getFloatTimeDomainData(buf);
+    const f = autoCorrelate(buf, ctx.sampleRate);
+    if (f > 0 && Number.isFinite(f)) {
+      history.push(f); if (history.length > SMOOTH_N) history.shift();
+      const fMed = median(history);
+      const target = TUNINGS[currentInstrument][currentString];
+      const cents = Math.round(1200 * Math.log2(fMed / target));
+      const devText = `${(fMed-target)>=0?'+':''}${(fMed-target).toFixed(2)} Hz  (${cents>=0?'+':''}${cents} cents)`;
+
+      freqEl.textContent = fMed.toFixed(2);
+      devEl.textContent = devText;
+      devEl.className = 'value mono ' + (Math.abs(cents) <= IN_TUNE ? 'ok' : 'bad');
+      needle.style.left = (50 + Math.max(-50, Math.min(50, cents))) + '%';
+      statusEl.textContent = Math.abs(cents) <= IN_TUNE ? '✅ In tune' : (cents>0 ? '⬆ Sharp' : '⬇ Flat');
+    } else {
+      freqEl.textContent = '–';
+      devEl.textContent = '–';
+      statusEl.textContent = 'Listening…';
+    }
+    raf = requestAnimationFrame(loop);
+  }
+
+  // ---- Events ----
+  instrumentSel.addEventListener('change', e => setInstrument(e.target.value));
+
+  startBtn.addEventListener('click', async () => {
+    try{
+      if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+      await ctx.resume();
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation:false, noiseSuppression:false, autoGainControl:false }
+      });
+      const src = ctx.createMediaStreamSource(stream);
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = 2048;
+      buf = new Float32Array(analyser.fftSize);
+      src.connect(analyser);
+      statusEl.textContent = 'Connected. Play the selected string and keep strumming until it turns green.';
+      if (raf) cancelAnimationFrame(raf);
+      loop();
+    }catch(e){
+      statusEl.textContent = 'Error: ' + e.name + ' — ' + e.message;
+      console.error(e);
+    }
+  });
+
+  // init
+  setInstrument(currentInstrument);
+})();
+</script>
+</body>
+</html>

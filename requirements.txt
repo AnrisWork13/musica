@@ -1,0 +1,7 @@
+
+
+fastapi
+uvicorn
+websockets
+numpy<2
+scipy>=1.10
